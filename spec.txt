@@ -25,3 +25,9 @@ goldapi-4g7vk3ykeikk2o0-io
 https://www.goldapi.io/api/:metal/:currency/[:date]
 https://www.goldapi.io/api/[XAU|XAG|XPT|XPD]/USD
 curl -X GET -H "x-access-token: goldapi-4g7vk3ykeikk2o0-io" "https://www.goldapi.io/api/XAU/USD"
+
+webservice api:
+
+GET api/eod?symbol=SBUX {open/high/low/close/volume: 123.45}  1d cache
+GET api/profile?symbol=SBUX {name: "Starbucks Corp"} 7d? cache
+
