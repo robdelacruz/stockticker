@@ -39,5 +39,5 @@ clean:
 	rm -rf t3 *.o static/*.js static/*.css static/*.map
 
 serve:
-	python -m SimpleHTTPServer
+	python -m SimpleHTTPServer > /dev/null
 
