@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -221,5 +222,29 @@ func parseArgs(args []string) (map[string]string, []string) {
 
 func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		sym := r.FormValue("sym")
+		if sym == "" {
+			http.Error(w, "sym required", 401)
+			return
+		}
+		mktsKey := "875d5614925e6d98037cbc8592b7bdc2"
+		sreq := fmt.Sprintf("http://api.marketstack.com/v1/tickers/%s/eod/latest?access_key=%s", sym, mktsKey)
+		req, err := http.NewRequest("GET", sreq, nil)
+		if err != nil {
+			panic(err)
+		}
+		c := http.Client{}
+		res, err := c.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer res.Body.Close()
+
+		bs, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Fprintf(w, string(bs))
+		fmt.Fprintf(w, "\n")
 	}
 }
