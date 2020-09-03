@@ -31,3 +31,6 @@ webservice api:
 GET api/eod?symbol=SBUX {open/high/low/close/volume: 123.45}  1d cache
 GET api/profile?symbol=SBUX {name: "Starbucks Corp"} 7d? cache
 
+https://stackoverflow.com/questions/12864302/how-to-set-headers-in-http-get-request
+https://gobyexample.com/http-clients
+
