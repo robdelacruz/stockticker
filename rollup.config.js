@@ -7,13 +7,13 @@ export default {
         file: "static/bundle.js",
         format: "iife",
         name: "app",
-        sourcemap: false
+        sourcemap: true
     },
     plugins: [
         svelte({
             dev: true,
             css: function(css) {
-                css.write("static/bundle.css");
+                css.write("bundle.css");
             }
         }),
         resolve({

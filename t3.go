@@ -101,7 +101,8 @@ Initialize new database file:
 
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "./static/coffee.ico") })
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
-	http.HandleFunc("/", indexHandler(db))
+	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir("./"))))
+	http.HandleFunc("/api/lookup/", lookupHandler(db))
 
 	port := "8000"
 	fmt.Printf("Listening on %s...\n", port)
@@ -218,7 +219,7 @@ func parseArgs(args []string) (map[string]string, []string) {
 	return switches, parms
 }
 
-func indexHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
+func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 	}
 }
