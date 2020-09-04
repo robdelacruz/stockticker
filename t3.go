@@ -41,18 +41,18 @@ type Quote struct {
 	Volume   float64 `json:"volume"`
 }
 
-type CachedQuote struct {
-	lastMod   time.Time
-	jsonQuote string
+type CacheEntry struct {
+	lastMod time.Time
+	item    string
 }
+type CacheMap map[string]*CacheEntry
 
 // Lookup by symbol. Ex. _cachedQuote["SBUX"]
-var _cachedQuote map[string]*CachedQuote
+var _cacheQuote CacheMap
 
 func init() {
-	_cachedQuote = map[string]*CachedQuote{}
+	_cacheQuote = CacheMap{}
 }
-
 func createTables(newfile string) {
 	if fileExists(newfile) {
 		s := fmt.Sprintf("File '%s' already exists. Can't initialize it.\n", newfile)
@@ -272,6 +272,25 @@ func parseArgs(args []string) (map[string]string, []string) {
 	return switches, parms
 }
 
+func lookupCache(cmap CacheMap, id string, ttlMins int) *string {
+	entry := cmap[id]
+	if entry != nil {
+		// Return cached item if it hasn't elapsed yet.
+		// Elapsed is determined by ttlMins (time to live number of minutes)
+		elapsedMins := time.Since(entry.lastMod) / time.Minute
+		if elapsedMins < time.Duration(ttlMins) {
+			return &entry.item
+		}
+	}
+	return nil
+}
+func setCacheItem(cmap CacheMap, id string, item string) {
+	cmap[id] = &CacheEntry{lastMod: time.Now(), item: item}
+}
+func removeCacheItem(cmap CacheMap, id string) {
+	cmap[id] = nil
+}
+
 func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sym := strings.ToUpper(r.FormValue("sym"))
@@ -283,19 +302,15 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		P := makeFprintf(w)
 
-		cq := _cachedQuote[sym]
-		if cq != nil {
-			elapsedMins := time.Since(cq.lastMod) / time.Minute
-			if elapsedMins < 1 {
-				// Return cached quote
-				log.Printf("(Returning cached quote)\n")
-				P(cq.jsonQuote)
-				return
-			}
+		cachedQuote := lookupCache(_cacheQuote, sym, 1)
+		if cachedQuote != nil {
+			// Return cached quote
+			log.Printf("(Returning cached quote)\n")
+			P(*cachedQuote)
+			return
 		}
 
 		log.Printf("*** Requesting new quote ***\n")
-
 		mktsKey := "875d5614925e6d98037cbc8592b7bdc2"
 		sreq := fmt.Sprintf("http://api.marketstack.com/v1/tickers/%s/eod/latest?access_key=%s", sym, mktsKey)
 		req, err := http.NewRequest("GET", sreq, nil)
@@ -335,8 +350,9 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 		if err != nil {
 			panic(err)
 		}
-		P(string(bs))
+		jsonQuote := string(bs)
+		P(jsonQuote)
 
-		_cachedQuote[q.Symbol] = &CachedQuote{lastMod: time.Now(), jsonQuote: string(bs)}
+		setCacheItem(_cacheQuote, sym, jsonQuote)
 	}
 }
