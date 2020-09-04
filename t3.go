@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -10,11 +11,47 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type PrintFunc func(format string, a ...interface{}) (n int, err error)
+
+type MktsQuote struct {
+	Symbol   string  `json:"symbol"`
+	Exchange string  `json:"exchange"`
+	Date     string  `json:"date"`
+	Open     float64 `json:"open"`
+	High     float64 `json:"high"`
+	Low      float64 `json:"low"`
+	Close    float64 `json:"close"`
+	Volume   float64 `json:"volume"`
+}
+
+type Quote struct {
+	Name     string  `json:"name"`
+	Symbol   string  `json:"symbol"`
+	Exchange string  `json:"exchange"`
+	Date     string  `json:"date"`
+	Open     float64 `json:"open"`
+	High     float64 `json:"high"`
+	Low      float64 `json:"low"`
+	Close    float64 `json:"close"`
+	Volume   float64 `json:"volume"`
+}
+
+type CachedQuote struct {
+	lastMod   time.Time
+	jsonQuote string
+}
+
+// Lookup by symbol. Ex. _cachedQuote["SBUX"]
+var _cachedQuote map[string]*CachedQuote
+
+func init() {
+	_cachedQuote = map[string]*CachedQuote{}
+}
 
 func createTables(newfile string) {
 	if fileExists(newfile) {
@@ -138,6 +175,21 @@ func txexec(tx *sql.Tx, s string, pp ...interface{}) (sql.Result, error) {
 }
 
 //*** Helper functions ***
+
+// Helper function to make fmt.Fprintf(w, ...) calls shorter.
+// Ex.
+// Replace:
+//   fmt.Fprintf(w, "<p>Some text %s.</p>", str)
+//   fmt.Fprintf(w, "<p>Some other text %s.</p>", str)
+// with the shorter version:
+//   P := makeFprintf(w)
+//   P("<p>Some text %s.</p>", str)
+//   P("<p>Some other text %s.</p>", str)
+func makeFprintf(w io.Writer) func(format string, a ...interface{}) (n int, err error) {
+	return func(format string, a ...interface{}) (n int, err error) {
+		return fmt.Fprintf(w, format, a...)
+	}
+}
 func listContains(ss []string, v string) bool {
 	for _, s := range ss {
 		if v == s {
@@ -222,11 +274,28 @@ func parseArgs(args []string) (map[string]string, []string) {
 
 func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sym := r.FormValue("sym")
+		sym := strings.ToUpper(r.FormValue("sym"))
 		if sym == "" {
 			http.Error(w, "sym required", 401)
 			return
 		}
+
+		w.Header().Set("Content-Type", "application/json")
+		P := makeFprintf(w)
+
+		cq := _cachedQuote[sym]
+		if cq != nil {
+			elapsedMins := time.Since(cq.lastMod) / time.Minute
+			if elapsedMins < 1 {
+				// Return cached quote
+				log.Printf("(Returning cached quote)\n")
+				P(cq.jsonQuote)
+				return
+			}
+		}
+
+		log.Printf("*** Requesting new quote ***\n")
+
 		mktsKey := "875d5614925e6d98037cbc8592b7bdc2"
 		sreq := fmt.Sprintf("http://api.marketstack.com/v1/tickers/%s/eod/latest?access_key=%s", sym, mktsKey)
 		req, err := http.NewRequest("GET", sreq, nil)
@@ -244,7 +313,30 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprintf(w, string(bs))
-		fmt.Fprintf(w, "\n")
+
+		var mq MktsQuote
+		err = json.Unmarshal(bs, &mq)
+		if err != nil {
+			panic(err)
+		}
+
+		var q Quote
+		q.Name = mq.Symbol
+		q.Symbol = mq.Symbol
+		q.Exchange = mq.Exchange
+		q.Date = mq.Date
+		q.Open = mq.Open
+		q.High = mq.High
+		q.Low = mq.Low
+		q.Close = mq.Close
+		q.Volume = mq.Volume
+
+		bs, err = json.MarshalIndent(q, "", "\t")
+		if err != nil {
+			panic(err)
+		}
+		P(string(bs))
+
+		_cachedQuote[q.Symbol] = &CachedQuote{lastMod: time.Now(), jsonQuote: string(bs)}
 	}
 }
