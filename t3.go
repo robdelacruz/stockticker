@@ -29,6 +29,21 @@ type MktsQuote struct {
 	Volume   float64 `json:"volume"`
 }
 
+type AlphaVantageInnerQuote struct {
+}
+
+type AlphaVantageQuote struct {
+	GlobalQuote struct {
+		Symbol string `json:"01. symbol"`
+		Date   string `json:"07. latest trading day"`
+		Open   string `json:"02. open"`
+		High   string `json:"03. high"`
+		Low    string `json:"04. low"`
+		Price  string `json:"05. price"`
+		Volume string `json:"06. volume"`
+	} `json:"Global Quote"`
+}
+
 type Quote struct {
 	Name     string  `json:"name"`
 	Symbol   string  `json:"symbol"`
@@ -37,7 +52,7 @@ type Quote struct {
 	Open     float64 `json:"open"`
 	High     float64 `json:"high"`
 	Low      float64 `json:"low"`
-	Close    float64 `json:"close"`
+	Price    float64 `json:"price"`
 	Volume   float64 `json:"volume"`
 }
 
@@ -227,6 +242,16 @@ func idtoi(sid string) int64 {
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
+func atof(s string) float64 {
+	if s == "" {
+		return 0.0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0.0
+	}
+	return f
+}
 
 func parseArgs(args []string) (map[string]string, []string) {
 	switches := map[string]string{}
@@ -311,8 +336,12 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 		}
 
 		log.Printf("*** Requesting new quote ***\n")
-		mktsKey := "875d5614925e6d98037cbc8592b7bdc2"
-		sreq := fmt.Sprintf("http://api.marketstack.com/v1/tickers/%s/eod/latest?access_key=%s", sym, mktsKey)
+		//mktsKey := "875d5614925e6d98037cbc8592b7bdc2"
+		//sreq := fmt.Sprintf("http://api.marketstack.com/v1/tickers/%s/eod/latest?access_key=%s", sym, mktsKey)
+
+		avKey := "G32E29AFMPQ2MCRG"
+		sreq := fmt.Sprintf("https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=%s&apikey=%s", sym, avKey)
+
 		req, err := http.NewRequest("GET", sreq, nil)
 		if err != nil {
 			panic(err)
@@ -329,22 +358,21 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 			panic(err)
 		}
 
-		var mq MktsQuote
-		err = json.Unmarshal(bs, &mq)
+		var srcq AlphaVantageQuote
+		err = json.Unmarshal(bs, &srcq)
 		if err != nil {
 			panic(err)
 		}
 
 		var q Quote
-		q.Name = mq.Symbol
-		q.Symbol = mq.Symbol
-		q.Exchange = mq.Exchange
-		q.Date = mq.Date
-		q.Open = mq.Open
-		q.High = mq.High
-		q.Low = mq.Low
-		q.Close = mq.Close
-		q.Volume = mq.Volume
+		q.Name = srcq.GlobalQuote.Symbol
+		q.Symbol = srcq.GlobalQuote.Symbol
+		q.Date = srcq.GlobalQuote.Date
+		q.Open = atof(srcq.GlobalQuote.Open)
+		q.High = atof(srcq.GlobalQuote.High)
+		q.Low = atof(srcq.GlobalQuote.Low)
+		q.Price = atof(srcq.GlobalQuote.Price)
+		q.Volume = atof(srcq.GlobalQuote.Volume)
 
 		bs, err = json.MarshalIndent(q, "", "\t")
 		if err != nil {
