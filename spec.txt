@@ -20,6 +20,11 @@ curl -X GET "http://api.marketstack.com/v1/tickers/aapl?access_key=875d5614925e6
 curl -X GET "http://api.marketstack.com/v1/eod?symbols=aapl&access_key=875d5614925e6d98037cbc8592b7bdc2"
 curl -X GET "http://api.marketstack.com/v1/intraday?symbols=aapl&access_key=875d5614925e6d98037cbc8592b7bdc2"
 
+alphavantage api key:
+G32E29AFMPQ2MCRG
+
+curl -X GET "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=aapl&apikey=G32E29AFMPQ2MCRG"
+curl -X GET "https://www.alphavantage.co/query?function=OVERVIEW&symbol=aapl&apikey=G32E29AFMPQ2MCRG"
 
 goldapi key:
 goldapi-4g7vk3ykeikk2o0-io

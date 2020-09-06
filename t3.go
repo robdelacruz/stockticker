@@ -18,21 +18,14 @@ import (
 
 type PrintFunc func(format string, a ...interface{}) (n int, err error)
 
-type MktsQuote struct {
-	Symbol   string  `json:"symbol"`
-	Exchange string  `json:"exchange"`
-	Date     string  `json:"date"`
-	Open     float64 `json:"open"`
-	High     float64 `json:"high"`
-	Low      float64 `json:"low"`
-	Close    float64 `json:"close"`
-	Volume   float64 `json:"volume"`
+type AlphaVantageOverview struct {
+	Symbol      string `json:"Symbol"`
+	AssetType   string `json:"AssetType"`
+	Name        string `json:"Name"`
+	Description string `json:"Description"`
+	Exchange    string `json:"Exchange"`
 }
-
-type AlphaVantageInnerQuote struct {
-}
-
-type AlphaVantageQuote struct {
+type AlphaVantagePrice struct {
 	GlobalQuote struct {
 		Symbol string `json:"01. symbol"`
 		Date   string `json:"07. latest trading day"`
@@ -44,29 +37,46 @@ type AlphaVantageQuote struct {
 	} `json:"Global Quote"`
 }
 
+type Overview struct {
+	Symbol      string `json:"symbol"`
+	AssetType   string `json:"assettype"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Exchange    string `json:"exchange"`
+}
+type Price struct {
+	Symbol string  `json:"symbol"`
+	Date   string  `json:"date"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Price  float64 `json:"price"`
+	Volume float64 `json:"volume"`
+}
 type Quote struct {
-	Name     string  `json:"name"`
-	Symbol   string  `json:"symbol"`
-	Exchange string  `json:"exchange"`
-	Date     string  `json:"date"`
-	Open     float64 `json:"open"`
-	High     float64 `json:"high"`
-	Low      float64 `json:"low"`
-	Price    float64 `json:"price"`
-	Volume   float64 `json:"volume"`
+	Symbol string  `json:"symbol"`
+	Name   string  `json:"name"`
+	Date   string  `json:"date"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Price  float64 `json:"price"`
+	Volume float64 `json:"volume"`
 }
 
 type CacheEntry struct {
 	lastMod time.Time
-	item    string
+	item    interface{}
 }
 type CacheMap map[string]*CacheEntry
 
-// Lookup by symbol. Ex. _cachedQuote["SBUX"]
 var _cacheQuote CacheMap
+var _cacheOverview CacheMap
+var _cachePrice CacheMap
 
 func init() {
-	_cacheQuote = CacheMap{}
+	_cacheOverview = CacheMap{}
+	_cachePrice = CacheMap{}
 }
 func createTables(newfile string) {
 	if fileExists(newfile) {
@@ -297,23 +307,140 @@ func parseArgs(args []string) (map[string]string, []string) {
 	return switches, parms
 }
 
-func lookupCache(cmap CacheMap, id string, ttlMins int) *string {
+func handleErr(w http.ResponseWriter, err error, sfunc string) {
+	log.Printf("%s: server error (%s)\n", sfunc, err)
+	http.Error(w, "Server error.", 500)
+}
+func handleDbErr(w http.ResponseWriter, err error, sfunc string) bool {
+	if err == sql.ErrNoRows {
+		http.Error(w, "Not found.", 404)
+		return true
+	}
+	if err != nil {
+		log.Printf("%s: database error (%s)\n", sfunc, err)
+		http.Error(w, "Server database error.", 500)
+		return true
+	}
+	return false
+}
+func handleTxErr(tx *sql.Tx, err error) bool {
+	if err != nil {
+		tx.Rollback()
+		return true
+	}
+	return false
+}
+
+//*** Cache functions ***
+func lookupCache(cmap CacheMap, id string, ttlMins int) interface{} {
 	entry := cmap[id]
 	if entry != nil {
 		// Return cached item if it hasn't elapsed yet.
 		// Elapsed is determined by ttlMins (time to live number of minutes)
 		elapsedMins := time.Since(entry.lastMod) / time.Minute
 		if elapsedMins < time.Duration(ttlMins) {
-			return &entry.item
+			return entry.item
 		}
 	}
 	return nil
 }
-func setCacheItem(cmap CacheMap, id string, item string) {
+func setCacheItem(cmap CacheMap, id string, item interface{}) {
 	cmap[id] = &CacheEntry{lastMod: time.Now(), item: item}
 }
 func removeCacheItem(cmap CacheMap, id string) {
-	cmap[id] = nil
+	delete(cmap, id)
+}
+
+func fetchOverview(sym string) (*Overview, error) {
+	cachedOverview := lookupCache(_cacheOverview, sym, 60*24)
+	if cachedOverview != nil {
+		log.Printf("(Returning cached overview)\n")
+		return cachedOverview.(*Overview), nil
+	}
+
+	log.Printf("*** Fetching overview ***\n")
+	avKey := "G32E29AFMPQ2MCRG"
+	sreq := fmt.Sprintf("https://www.alphavantage.co/query?function=OVERVIEW&symbol=%s&apikey=%s", sym, avKey)
+
+	req, err := http.NewRequest("GET", sreq, nil)
+	if err != nil {
+		return nil, err
+	}
+	c := http.Client{}
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	bs, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var avo AlphaVantageOverview
+	err = json.Unmarshal(bs, &avo)
+	if err != nil {
+		return nil, err
+	}
+
+	var o Overview
+	o.Symbol = avo.Symbol
+	o.AssetType = avo.AssetType
+	o.Name = avo.Name
+	o.Description = avo.Description
+	o.Exchange = avo.Exchange
+
+	setCacheItem(_cacheOverview, sym, &o)
+
+	return &o, nil
+}
+
+func fetchPrice(sym string) (*Price, error) {
+	cachedPrice := lookupCache(_cachePrice, sym, 60)
+	if cachedPrice != nil {
+		log.Printf("(Returning cached price)\n")
+		return cachedPrice.(*Price), nil
+	}
+
+	log.Printf("*** Fetching price ***\n")
+	avKey := "G32E29AFMPQ2MCRG"
+	sreq := fmt.Sprintf("https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=%s&apikey=%s", sym, avKey)
+
+	req, err := http.NewRequest("GET", sreq, nil)
+	if err != nil {
+		return nil, err
+	}
+	c := http.Client{}
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	bs, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var avp AlphaVantagePrice
+	err = json.Unmarshal(bs, &avp)
+	if err != nil {
+		return nil, err
+	}
+
+	var p Price
+	p.Symbol = avp.GlobalQuote.Symbol
+	p.Date = avp.GlobalQuote.Date
+	p.Open = atof(avp.GlobalQuote.Open)
+	p.High = atof(avp.GlobalQuote.High)
+	p.Low = atof(avp.GlobalQuote.Low)
+	p.Price = atof(avp.GlobalQuote.Price)
+	p.Volume = atof(avp.GlobalQuote.Volume)
+
+	setCacheItem(_cachePrice, sym, &p)
+
+	return &p, nil
 }
 
 func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
@@ -324,63 +451,36 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		P := makeFprintf(w)
-
-		cachedQuote := lookupCache(_cacheQuote, sym, 1)
-		if cachedQuote != nil {
-			// Return cached quote
-			log.Printf("(Returning cached quote)\n")
-			P(*cachedQuote)
+		overview, err := fetchOverview(sym)
+		if err != nil {
+			handleErr(w, err, "fetchOverview")
+			return
+		}
+		price, err := fetchPrice(sym)
+		if err != nil {
+			handleErr(w, err, "fetchPrice")
 			return
 		}
 
-		log.Printf("*** Requesting new quote ***\n")
-		//mktsKey := "875d5614925e6d98037cbc8592b7bdc2"
-		//sreq := fmt.Sprintf("http://api.marketstack.com/v1/tickers/%s/eod/latest?access_key=%s", sym, mktsKey)
+		var quote Quote
+		quote.Symbol = price.Symbol
+		quote.Name = overview.Name
+		quote.Date = price.Date
+		quote.Open = price.Open
+		quote.High = price.High
+		quote.Low = price.Low
+		quote.Price = price.Price
+		quote.Volume = price.Volume
 
-		avKey := "G32E29AFMPQ2MCRG"
-		sreq := fmt.Sprintf("https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=%s&apikey=%s", sym, avKey)
-
-		req, err := http.NewRequest("GET", sreq, nil)
+		bs, err := json.MarshalIndent(quote, "", "\t")
 		if err != nil {
-			panic(err)
-		}
-		c := http.Client{}
-		res, err := c.Do(req)
-		if err != nil {
-			panic(err)
-		}
-		defer res.Body.Close()
-
-		bs, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			panic(err)
-		}
-
-		var srcq AlphaVantageQuote
-		err = json.Unmarshal(bs, &srcq)
-		if err != nil {
-			panic(err)
-		}
-
-		var q Quote
-		q.Name = srcq.GlobalQuote.Symbol
-		q.Symbol = srcq.GlobalQuote.Symbol
-		q.Date = srcq.GlobalQuote.Date
-		q.Open = atof(srcq.GlobalQuote.Open)
-		q.High = atof(srcq.GlobalQuote.High)
-		q.Low = atof(srcq.GlobalQuote.Low)
-		q.Price = atof(srcq.GlobalQuote.Price)
-		q.Volume = atof(srcq.GlobalQuote.Volume)
-
-		bs, err = json.MarshalIndent(q, "", "\t")
-		if err != nil {
-			panic(err)
+			handleErr(w, err, "lookupHandler")
+			return
 		}
 		jsonQuote := string(bs)
-		P(jsonQuote)
 
-		setCacheItem(_cacheQuote, sym, jsonQuote)
+		w.Header().Set("Content-Type", "application/json")
+		P := makeFprintf(w)
+		P(jsonQuote)
 	}
 }
