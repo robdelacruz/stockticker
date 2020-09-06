@@ -1,0 +1,16 @@
+{
+    "open":84.7,
+    "high":86.09,
+    "low":84.23,
+    "close":86.05,
+    "volume":8112225.0,
+    "adj_high":86.09,
+    "adj_low":84.23,
+    "adj_close":86.05,
+    "adj_open":84.7,
+    "adj_volume":8112225.0,
+    "symbol":"SBUX",
+    "exchange":"XNAS",
+    "date":"2020-09-01T00:00:00+0000"
+}
+
