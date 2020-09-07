@@ -36,6 +36,20 @@ type AlphaVantagePrice struct {
 		Volume string `json:"06. volume"`
 	} `json:"Global Quote"`
 }
+type GoldApiPrice struct {
+	Timestamp      int64   `json:"timestamp"`
+	Metal          string  `json:"metal"`
+	Currency       string  `json:"currency"`
+	Exchange       string  `json:"exchange"`
+	Symbol         string  `json:"symbol"`
+	PrevClosePrice float64 `json:"prev_close_price"`
+	OpenPrice      float64 `json:"open_price"`
+	LowPrice       float64 `json:"low_price"`
+	HighPrice      float64 `json:"high_price"`
+	Price          float64 `json:"price"`
+	Ask            float64 `json:"ask"`
+	Bid            float64 `json:"bid"`
+}
 
 type Overview struct {
 	Symbol      string `json:"symbol"`
@@ -443,6 +457,54 @@ func fetchPrice(sym string) (*Price, error) {
 	return &p, nil
 }
 
+func fetchMetalPrice(sym string) (*Price, error) {
+	cachedPrice := lookupCache(_cachePrice, sym, 60)
+	if cachedPrice != nil {
+		log.Printf("(Returning cached price)\n")
+		return cachedPrice.(*Price), nil
+	}
+
+	log.Printf("*** Fetching metal price ***\n")
+	key := "goldapi-4g7vk3ykeikk2o0-io"
+	sreq := fmt.Sprintf("https://www.goldapi.io/api/%s/USD", sym)
+
+	req, err := http.NewRequest("GET", sreq, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-access-token", key)
+	c := http.Client{}
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	bs, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var gldPrice GoldApiPrice
+	err = json.Unmarshal(bs, &gldPrice)
+	if err != nil {
+		return nil, err
+	}
+
+	var p Price
+	p.Symbol = gldPrice.Metal
+	p.Open = gldPrice.OpenPrice
+	p.High = gldPrice.HighPrice
+	p.Low = gldPrice.LowPrice
+	p.Price = gldPrice.Price
+	tm := time.Unix(gldPrice.Timestamp, 0)
+	p.Date = tm.Format(time.RFC3339)
+
+	setCacheItem(_cachePrice, sym, &p)
+
+	return &p, nil
+}
+
 func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sym := strings.ToUpper(r.FormValue("sym"))
@@ -451,26 +513,55 @@ func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
 			return
 		}
 
-		overview, err := fetchOverview(sym)
-		if err != nil {
-			handleErr(w, err, "fetchOverview")
-			return
-		}
-		price, err := fetchPrice(sym)
-		if err != nil {
-			handleErr(w, err, "fetchPrice")
-			return
-		}
-
 		var quote Quote
-		quote.Symbol = price.Symbol
-		quote.Name = overview.Name
-		quote.Date = price.Date
-		quote.Open = price.Open
-		quote.High = price.High
-		quote.Low = price.Low
-		quote.Price = price.Price
-		quote.Volume = price.Volume
+
+		if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
+			price, err := fetchMetalPrice(sym)
+			if err != nil {
+				handleErr(w, err, "fetchMetalPrice")
+				return
+			}
+
+			quote.Symbol = price.Symbol
+			quote.Date = price.Date
+			quote.Open = price.Open
+			quote.High = price.High
+			quote.Low = price.Low
+			quote.Price = price.Price
+			quote.Volume = price.Volume
+
+			if sym == "XAU" {
+				quote.Name = "Spot Gold"
+			} else if sym == "XAG" {
+				quote.Name = "Spot Silver"
+			} else if sym == "XPT" {
+				quote.Name = "Spot Platinum"
+			} else if sym == "XPD" {
+				quote.Name = "Spot Palladium"
+			} else if sym == "XRH" {
+				quote.Name = "Spot Rhodium"
+			}
+		} else {
+			overview, err := fetchOverview(sym)
+			if err != nil {
+				handleErr(w, err, "fetchOverview")
+				return
+			}
+			price, err := fetchPrice(sym)
+			if err != nil {
+				handleErr(w, err, "fetchPrice")
+				return
+			}
+
+			quote.Symbol = price.Symbol
+			quote.Name = overview.Name
+			quote.Date = price.Date
+			quote.Open = price.Open
+			quote.High = price.High
+			quote.Low = price.Low
+			quote.Price = price.Price
+			quote.Volume = price.Volume
+		}
 
 		bs, err := json.MarshalIndent(quote, "", "\t")
 		if err != nil {
