@@ -78,20 +78,12 @@ type Quote struct {
 	Volume float64 `json:"volume"`
 }
 
-type CacheEntry struct {
-	lastMod time.Time
-	item    interface{}
+type Context struct {
+	db       *sql.DB
+	memcache Cache
+	dbcache  Cache
 }
-type CacheMap map[string]*CacheEntry
 
-var _cacheQuote CacheMap
-var _cacheOverview CacheMap
-var _cachePrice CacheMap
-
-func init() {
-	_cacheOverview = CacheMap{}
-	_cachePrice = CacheMap{}
-}
 func createTables(newfile string) {
 	if fileExists(newfile) {
 		s := fmt.Sprintf("File '%s' already exists. Can't initialize it.\n", newfile)
@@ -176,10 +168,14 @@ Initialize new database file:
 		os.Exit(1)
 	}
 
+	memcache := MemCache{}
+	//ctx := Context{db: db, memcache: memcache, dbcache: DbCache(db)}
+	ctx := Context{db: db, memcache: memcache, dbcache: nil}
+
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "./static/coffee.ico") })
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir("./"))))
-	http.HandleFunc("/api/lookup/", lookupHandler(db))
+	http.HandleFunc("/api/lookup/", ctx.lookupHandler)
 
 	port := "8000"
 	fmt.Printf("Listening on %s...\n", port)
@@ -346,27 +342,56 @@ func handleTxErr(tx *sql.Tx, err error) bool {
 }
 
 //*** Cache functions ***
-func lookupCache(cmap CacheMap, id string, ttlMins int) interface{} {
-	entry := cmap[id]
+type Cache interface {
+	Lookup(section, id string, ttlMins int) CacheItem
+	Set(section, id string, item CacheItem)
+	Remove(section, id string)
+}
+type CacheItem interface{}
+type CacheEntry struct {
+	LastMod time.Time
+	Item    CacheItem
+}
+
+func cachekey(section, id string) string {
+	return fmt.Sprintf("%s_%s", section, id)
+}
+
+type MemCache map[string]*CacheEntry
+
+func (mc MemCache) Lookup(section, id string, ttlMins int) CacheItem {
+	k := cachekey(section, id)
+	entry := mc[k]
 	if entry != nil {
-		// Return cached item if it hasn't elapsed yet.
-		// Elapsed is determined by ttlMins (time to live number of minutes)
-		elapsedMins := time.Since(entry.lastMod) / time.Minute
+		// Cached item is vaid if its age is less than ttlMins
+		elapsedMins := time.Since(entry.LastMod) / time.Minute
 		if elapsedMins < time.Duration(ttlMins) {
-			return entry.item
+			return entry.Item
 		}
 	}
 	return nil
 }
-func setCacheItem(cmap CacheMap, id string, item interface{}) {
-	cmap[id] = &CacheEntry{lastMod: time.Now(), item: item}
+func (mc MemCache) Set(section, id string, item CacheItem) {
+	k := cachekey(section, id)
+	mc[k] = &CacheEntry{LastMod: time.Now(), Item: item}
 }
-func removeCacheItem(cmap CacheMap, id string) {
-	delete(cmap, id)
+func (mc MemCache) Remove(section, id string) {
+	delete(mc, id)
 }
 
-func fetchOverview(sym string) (*Overview, error) {
-	cachedOverview := lookupCache(_cacheOverview, sym, 60*24)
+type DbCache *sql.DB
+
+//func (DbCache *db) createTables() {
+//}
+//func (DbCache *db) lookup(section, id string, ttlMins int) CacheItem {
+//}
+//func (DbCache *db) set(section, id string, ttlMins int) CacheItem {
+//}
+//func (DbCache *db) remove(section, id string) {
+//}
+
+func fetchOverview(sym string, cache Cache) (*Overview, error) {
+	cachedOverview := cache.Lookup("overview", sym, 60*24)
 	if cachedOverview != nil {
 		log.Printf("(Returning cached overview)\n")
 		return cachedOverview.(*Overview), nil
@@ -405,13 +430,13 @@ func fetchOverview(sym string) (*Overview, error) {
 	o.Description = avo.Description
 	o.Exchange = avo.Exchange
 
-	setCacheItem(_cacheOverview, sym, &o)
+	cache.Set("overview", sym, &o)
 
 	return &o, nil
 }
 
-func fetchPrice(sym string) (*Price, error) {
-	cachedPrice := lookupCache(_cachePrice, sym, 60)
+func fetchPrice(sym string, cache Cache) (*Price, error) {
+	cachedPrice := cache.Lookup("price", sym, 60)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price)\n")
 		return cachedPrice.(*Price), nil
@@ -452,13 +477,13 @@ func fetchPrice(sym string) (*Price, error) {
 	p.Price = atof(avp.GlobalQuote.Price)
 	p.Volume = atof(avp.GlobalQuote.Volume)
 
-	setCacheItem(_cachePrice, sym, &p)
+	cache.Set("price", sym, &p)
 
 	return &p, nil
 }
 
-func fetchMetalPrice(sym string) (*Price, error) {
-	cachedPrice := lookupCache(_cachePrice, sym, 60)
+func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
+	cachedPrice := cache.Lookup("price", sym, 60)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price)\n")
 		return cachedPrice.(*Price), nil
@@ -500,78 +525,76 @@ func fetchMetalPrice(sym string) (*Price, error) {
 	tm := time.Unix(gldPrice.Timestamp, 0)
 	p.Date = tm.Format(time.RFC3339)
 
-	setCacheItem(_cachePrice, sym, &p)
+	cache.Set("price", sym, &p)
 
 	return &p, nil
 }
 
-func lookupHandler(db *sql.DB) func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		sym := strings.ToUpper(r.FormValue("sym"))
-		if sym == "" {
-			http.Error(w, "sym required", 401)
-			return
-		}
-
-		var quote Quote
-
-		if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
-			price, err := fetchMetalPrice(sym)
-			if err != nil {
-				handleErr(w, err, "fetchMetalPrice")
-				return
-			}
-
-			quote.Symbol = price.Symbol
-			quote.Date = price.Date
-			quote.Open = price.Open
-			quote.High = price.High
-			quote.Low = price.Low
-			quote.Price = price.Price
-			quote.Volume = price.Volume
-
-			if sym == "XAU" {
-				quote.Name = "Spot Gold"
-			} else if sym == "XAG" {
-				quote.Name = "Spot Silver"
-			} else if sym == "XPT" {
-				quote.Name = "Spot Platinum"
-			} else if sym == "XPD" {
-				quote.Name = "Spot Palladium"
-			} else if sym == "XRH" {
-				quote.Name = "Spot Rhodium"
-			}
-		} else {
-			overview, err := fetchOverview(sym)
-			if err != nil {
-				handleErr(w, err, "fetchOverview")
-				return
-			}
-			price, err := fetchPrice(sym)
-			if err != nil {
-				handleErr(w, err, "fetchPrice")
-				return
-			}
-
-			quote.Symbol = price.Symbol
-			quote.Name = overview.Name
-			quote.Date = price.Date
-			quote.Open = price.Open
-			quote.High = price.High
-			quote.Low = price.Low
-			quote.Price = price.Price
-			quote.Volume = price.Volume
-		}
-
-		bs, err := json.MarshalIndent(quote, "", "\t")
-		if err != nil {
-			handleErr(w, err, "lookupHandler")
-			return
-		}
-		jsonQuote := string(bs)
-
-		w.Header().Set("Content-Type", "application/json")
-		P := makeFprintf(w)
-		P(jsonQuote)
+func (ctx *Context) lookupHandler(w http.ResponseWriter, r *http.Request) {
+	sym := strings.ToUpper(r.FormValue("sym"))
+	if sym == "" {
+		http.Error(w, "sym required", 401)
+		return
 	}
+
+	var quote Quote
+
+	if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
+		price, err := fetchMetalPrice(sym, ctx.memcache)
+		if err != nil {
+			handleErr(w, err, "fetchMetalPrice")
+			return
+		}
+
+		quote.Symbol = price.Symbol
+		quote.Date = price.Date
+		quote.Open = price.Open
+		quote.High = price.High
+		quote.Low = price.Low
+		quote.Price = price.Price
+		quote.Volume = price.Volume
+
+		if sym == "XAU" {
+			quote.Name = "Spot Gold"
+		} else if sym == "XAG" {
+			quote.Name = "Spot Silver"
+		} else if sym == "XPT" {
+			quote.Name = "Spot Platinum"
+		} else if sym == "XPD" {
+			quote.Name = "Spot Palladium"
+		} else if sym == "XRH" {
+			quote.Name = "Spot Rhodium"
+		}
+	} else {
+		overview, err := fetchOverview(sym, ctx.memcache)
+		if err != nil {
+			handleErr(w, err, "fetchOverview")
+			return
+		}
+		price, err := fetchPrice(sym, ctx.memcache)
+		if err != nil {
+			handleErr(w, err, "fetchPrice")
+			return
+		}
+
+		quote.Symbol = price.Symbol
+		quote.Name = overview.Name
+		quote.Date = price.Date
+		quote.Open = price.Open
+		quote.High = price.High
+		quote.Low = price.Low
+		quote.Price = price.Price
+		quote.Volume = price.Volume
+	}
+
+	bs, err := json.MarshalIndent(quote, "", "\t")
+	if err != nil {
+		handleErr(w, err, "lookupHandler")
+		return
+	}
+	jsonQuote := string(bs)
+
+	w.Header().Set("Content-Type", "application/json")
+	P := makeFprintf(w)
+	P(jsonQuote)
 }
