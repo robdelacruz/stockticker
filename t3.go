@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,8 +82,13 @@ type Quote struct {
 
 type Context struct {
 	db       *sql.DB
-	memcache Cache
-	dbcache  Cache
+	memcache MemCache
+	dbcache  DbCache
+}
+
+func init() {
+	gob.Register(Overview{})
+	gob.Register(CacheEntry{})
 }
 
 func createTables(newfile string) {
@@ -169,8 +176,13 @@ Initialize new database file:
 	}
 
 	memcache := MemCache{}
-	//ctx := Context{db: db, memcache: memcache, dbcache: DbCache(db)}
-	ctx := Context{db: db, memcache: memcache, dbcache: nil}
+	dbcache := DbCache(*db)
+	err = dbcache.CreateTables()
+	if err != nil {
+		fmt.Printf("Error creating dbcache table (%s)\n", err)
+		os.Exit(1)
+	}
+	ctx := Context{db: db, memcache: memcache, dbcache: dbcache}
 
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "./static/coffee.ico") })
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
@@ -361,15 +373,16 @@ type MemCache map[string]*CacheEntry
 
 func (mc MemCache) Lookup(section, id string, ttlMins int) CacheItem {
 	k := cachekey(section, id)
-	entry := mc[k]
-	if entry != nil {
-		// Cached item is vaid if its age is less than ttlMins
-		elapsedMins := time.Since(entry.LastMod) / time.Minute
-		if elapsedMins < time.Duration(ttlMins) {
-			return entry.Item
-		}
+	ce := mc[k]
+	if ce == nil {
+		return nil
 	}
-	return nil
+	// Cached item is invalid if its age exceeds ttlMins
+	elapsedMins := time.Since(ce.LastMod) / time.Minute
+	if elapsedMins > time.Duration(ttlMins) {
+		return nil
+	}
+	return ce.Item
 }
 func (mc MemCache) Set(section, id string, item CacheItem) {
 	k := cachekey(section, id)
@@ -379,22 +392,79 @@ func (mc MemCache) Remove(section, id string) {
 	delete(mc, id)
 }
 
-type DbCache *sql.DB
+type DbCache sql.DB
 
-//func (DbCache *db) createTables() {
-//}
-//func (DbCache *db) lookup(section, id string, ttlMins int) CacheItem {
-//}
-//func (DbCache *db) set(section, id string, ttlMins int) CacheItem {
-//}
-//func (DbCache *db) remove(section, id string) {
-//}
+func (dbc DbCache) CreateTables() error {
+	db := sql.DB(dbc)
+	s := "CREATE TABLE IF NOT EXISTS dbcache (key TEXT PRIMARY KEY NOT NULL, content BLOB);"
+	_, err := sqlexec(&db, s)
+	return err
+}
+func (dbc DbCache) Lookup(section, id string, ttlMins int) CacheItem {
+	db := sql.DB(dbc)
+	k := cachekey(section, id)
+	s := "SELECT content FROM dbcache WHERE key = ?"
+	row := db.QueryRow(s, k)
+
+	var bs []byte
+	err := row.Scan(&bs)
+	if err == sql.ErrNoRows {
+		return nil
+	} else if err != nil {
+		return nil
+	}
+	ce := gobdecode(bs)
+	if ce == nil {
+		return nil
+	}
+	// Cached item is invalid if its age exceeds ttlMins
+	elapsedMins := time.Since(ce.LastMod) / time.Minute
+	if elapsedMins > time.Duration(ttlMins) {
+		return nil
+	}
+	return ce.Item
+}
+func (dbc DbCache) Set(section, id string, item CacheItem) {
+	db := sql.DB(dbc)
+	k := cachekey(section, id)
+	s := "INSERT OR REPLACE INTO dbcache (key, content) VALUES (?, ?)"
+
+	ce := CacheEntry{LastMod: time.Now(), Item: item}
+	sqlexec(&db, s, k, gobencode(ce))
+}
+func (dbc DbCache) Remove(section, id string) {
+	db := sql.DB(dbc)
+	k := cachekey(section, id)
+	s := "DELETE FROM dbcache WHERE key = ?"
+	sqlexec(&db, s, k)
+}
+
+func gobencode(v CacheEntry) []byte {
+	var b bytes.Buffer
+	e := gob.NewEncoder(&b)
+	err := e.Encode(v)
+	if err != nil {
+		return nil
+	}
+	return b.Bytes()
+}
+func gobdecode(bs []byte) *CacheEntry {
+	var v CacheEntry
+	b := bytes.NewBuffer(bs)
+	d := gob.NewDecoder(b)
+	err := d.Decode(&v)
+	if err != nil {
+		return nil
+	}
+	return &v
+}
 
 func fetchOverview(sym string, cache Cache) (*Overview, error) {
 	cachedOverview := cache.Lookup("overview", sym, 60*24)
 	if cachedOverview != nil {
 		log.Printf("(Returning cached overview)\n")
-		return cachedOverview.(*Overview), nil
+		o := cachedOverview.(Overview)
+		return &o, nil
 	}
 
 	log.Printf("*** Fetching overview ***\n")
@@ -430,7 +500,9 @@ func fetchOverview(sym string, cache Cache) (*Overview, error) {
 	o.Description = avo.Description
 	o.Exchange = avo.Exchange
 
-	cache.Set("overview", sym, &o)
+	if o.Symbol != "" {
+		cache.Set("overview", sym, o)
+	}
 
 	return &o, nil
 }
@@ -439,7 +511,8 @@ func fetchPrice(sym string, cache Cache) (*Price, error) {
 	cachedPrice := cache.Lookup("price", sym, 60)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price)\n")
-		return cachedPrice.(*Price), nil
+		p := cachedPrice.(Price)
+		return &p, nil
 	}
 
 	log.Printf("*** Fetching price ***\n")
@@ -477,7 +550,9 @@ func fetchPrice(sym string, cache Cache) (*Price, error) {
 	p.Price = atof(avp.GlobalQuote.Price)
 	p.Volume = atof(avp.GlobalQuote.Volume)
 
-	cache.Set("price", sym, &p)
+	if p.Symbol != "" {
+		cache.Set("price", sym, p)
+	}
 
 	return &p, nil
 }
@@ -486,7 +561,8 @@ func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 	cachedPrice := cache.Lookup("price", sym, 60)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price)\n")
-		return cachedPrice.(*Price), nil
+		p := cachedPrice.(Price)
+		return &p, nil
 	}
 
 	log.Printf("*** Fetching metal price ***\n")
@@ -525,7 +601,9 @@ func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 	tm := time.Unix(gldPrice.Timestamp, 0)
 	p.Date = tm.Format(time.RFC3339)
 
-	cache.Set("price", sym, &p)
+	if p.Symbol != "" {
+		cache.Set("price", sym, p)
+	}
 
 	return &p, nil
 }
@@ -566,7 +644,7 @@ func (ctx *Context) lookupHandler(w http.ResponseWriter, r *http.Request) {
 			quote.Name = "Spot Rhodium"
 		}
 	} else {
-		overview, err := fetchOverview(sym, ctx.memcache)
+		overview, err := fetchOverview(sym, ctx.dbcache)
 		if err != nil {
 			handleErr(w, err, "fetchOverview")
 			return
