@@ -87,8 +87,9 @@ type Context struct {
 }
 
 func init() {
-	gob.Register(Overview{})
 	gob.Register(CacheEntry{})
+	gob.Register(Overview{})
+	gob.Register(Price{})
 }
 
 func createTables(newfile string) {
@@ -355,14 +356,14 @@ func handleTxErr(tx *sql.Tx, err error) bool {
 
 //*** Cache functions ***
 type Cache interface {
-	Lookup(section, id string, ttlMins int) CacheItem
-	Set(section, id string, item CacheItem)
+	Lookup(section, id string) interface{}
+	Set(section, id string, item interface{}, minsMaxAge int)
 	Remove(section, id string)
+	Reset()
 }
-type CacheItem interface{}
 type CacheEntry struct {
-	LastMod time.Time
-	Item    CacheItem
+	Item    interface{}
+	Expires time.Time
 }
 
 func cachekey(section, id string) string {
@@ -371,25 +372,29 @@ func cachekey(section, id string) string {
 
 type MemCache map[string]*CacheEntry
 
-func (mc MemCache) Lookup(section, id string, ttlMins int) CacheItem {
+func (mc MemCache) Lookup(section, id string) interface{} {
 	k := cachekey(section, id)
 	ce := mc[k]
 	if ce == nil {
 		return nil
 	}
-	// Cached item is invalid if its age exceeds ttlMins
-	elapsedMins := time.Since(ce.LastMod) / time.Minute
-	if elapsedMins > time.Duration(ttlMins) {
+	if time.Now().After(ce.Expires) {
 		return nil
 	}
 	return ce.Item
 }
-func (mc MemCache) Set(section, id string, item CacheItem) {
+func (mc MemCache) Set(section, id string, item interface{}, minsMaxAge int) {
 	k := cachekey(section, id)
-	mc[k] = &CacheEntry{LastMod: time.Now(), Item: item}
+	expires := time.Now().Add(time.Minute * time.Duration(minsMaxAge))
+	mc[k] = &CacheEntry{Item: item, Expires: expires}
 }
 func (mc MemCache) Remove(section, id string) {
 	delete(mc, id)
+}
+func (mc MemCache) Reset() {
+	for k := range mc {
+		delete(mc, k)
+	}
 }
 
 type DbCache sql.DB
@@ -400,7 +405,7 @@ func (dbc DbCache) CreateTables() error {
 	_, err := sqlexec(&db, s)
 	return err
 }
-func (dbc DbCache) Lookup(section, id string, ttlMins int) CacheItem {
+func (dbc DbCache) Lookup(section, id string) interface{} {
 	db := sql.DB(dbc)
 	k := cachekey(section, id)
 	s := "SELECT content FROM dbcache WHERE key = ?"
@@ -417,19 +422,18 @@ func (dbc DbCache) Lookup(section, id string, ttlMins int) CacheItem {
 	if ce == nil {
 		return nil
 	}
-	// Cached item is invalid if its age exceeds ttlMins
-	elapsedMins := time.Since(ce.LastMod) / time.Minute
-	if elapsedMins > time.Duration(ttlMins) {
+	if time.Now().After(ce.Expires) {
 		return nil
 	}
 	return ce.Item
 }
-func (dbc DbCache) Set(section, id string, item CacheItem) {
+func (dbc DbCache) Set(section, id string, item interface{}, minsMaxAge int) {
 	db := sql.DB(dbc)
 	k := cachekey(section, id)
 	s := "INSERT OR REPLACE INTO dbcache (key, content) VALUES (?, ?)"
 
-	ce := CacheEntry{LastMod: time.Now(), Item: item}
+	expires := time.Now().Add(time.Minute * time.Duration(minsMaxAge))
+	ce := CacheEntry{Item: item, Expires: expires}
 	sqlexec(&db, s, k, gobencode(ce))
 }
 func (dbc DbCache) Remove(section, id string) {
@@ -437,6 +441,11 @@ func (dbc DbCache) Remove(section, id string) {
 	k := cachekey(section, id)
 	s := "DELETE FROM dbcache WHERE key = ?"
 	sqlexec(&db, s, k)
+}
+func (dbc DbCache) Reset() {
+	db := sql.DB(dbc)
+	s := "DELETE FROM dbcache"
+	sqlexec(&db, s)
 }
 
 func gobencode(v CacheEntry) []byte {
@@ -460,7 +469,7 @@ func gobdecode(bs []byte) *CacheEntry {
 }
 
 func fetchOverview(sym string, cache Cache) (*Overview, error) {
-	cachedOverview := cache.Lookup("overview", sym, 60*24)
+	cachedOverview := cache.Lookup("overview", sym)
 	if cachedOverview != nil {
 		log.Printf("(Returning cached overview)\n")
 		o := cachedOverview.(Overview)
@@ -501,14 +510,19 @@ func fetchOverview(sym string, cache Cache) (*Overview, error) {
 	o.Exchange = avo.Exchange
 
 	if o.Symbol != "" {
-		cache.Set("overview", sym, o)
+		// Cache overview for 24 hours.
+		cache.Set("overview", sym, o, 60*24)
+	} else {
+		// Data source returned nothing, so try fetching again after 1 hour.
+		// Empty result will be cached to limit data source requests.
+		cache.Set("overview", sym, o, 60)
 	}
 
 	return &o, nil
 }
 
 func fetchPrice(sym string, cache Cache) (*Price, error) {
-	cachedPrice := cache.Lookup("price", sym, 60)
+	cachedPrice := cache.Lookup("price", sym)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price)\n")
 		p := cachedPrice.(Price)
@@ -551,14 +565,19 @@ func fetchPrice(sym string, cache Cache) (*Price, error) {
 	p.Volume = atof(avp.GlobalQuote.Volume)
 
 	if p.Symbol != "" {
-		cache.Set("price", sym, p)
+		// Cache price for 1 hour.
+		cache.Set("price", sym, p, 60)
+	} else {
+		// Data source returned nothing, so try fetching again after 5 mins.
+		// Empty result will be cached to limit data source requests.
+		cache.Set("price", sym, p, 5)
 	}
 
 	return &p, nil
 }
 
 func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
-	cachedPrice := cache.Lookup("price", sym, 60)
+	cachedPrice := cache.Lookup("price", sym)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price)\n")
 		p := cachedPrice.(Price)
@@ -602,7 +621,12 @@ func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 	p.Date = tm.Format(time.RFC3339)
 
 	if p.Symbol != "" {
-		cache.Set("price", sym, p)
+		// Cache price for 1 hour.
+		cache.Set("price", sym, p, 60)
+	} else {
+		// Data source returned nothing, so try fetching again after 5 mins.
+		// Empty result will be cached to limit data source requests.
+		cache.Set("price", sym, p, 5)
 	}
 
 	return &p, nil
