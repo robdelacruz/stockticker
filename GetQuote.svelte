@@ -1,10 +1,12 @@
-<form>
-    <div>
-        <input class="border py-1 px-2" id="symbol" name="symbol" type="text" size="10" placeholder="Enter Symbol" value="{symbol}">
-        <button class="border rounded py-1 px-2 bg-gray-400" type="submit" on:click={getquote_click}>Get Quote</button>
-    </div>
-    <div>{@html profile}</div>
-</form>
+<div class="bg-gray-800 text-gray-200 p-8">
+    <form>
+        <div>
+            <input class="border border-gray-500 py-1 px-2 bg-gray-800 text-gray-200" id="symbol" name="symbol" type="text" size="10" placeholder="Enter Symbol" value="{symbol}">
+            <button class="border border-gray-500 rounded py-1 px-2 bg-gray-200 text-gray-800" type="submit" on:click={getquote_click}>Get Quote</button>
+        </div>
+        <div>{@html profile}</div>
+    </form>
+</div>
 
 <script>
 export let symbol = "";
