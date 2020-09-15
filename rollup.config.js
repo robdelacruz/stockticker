@@ -13,7 +13,7 @@ export default {
         svelte({
             dev: true,
             css: function(css) {
-                css.write("static/bundle.css");
+                css.write("bundle.css");
             }
         }),
         resolve({
