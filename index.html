@@ -14,11 +14,19 @@
 -->
 
 <div class="bg-gray-800 text-gray-200 py-4 px-8 rounded-lg shadow-lg mx-auto" style="width: 28rem;">
-        <h1 class="border-b border-gray-500 font-bold pb-1 mb-4">Lorem Ipsum Title</h1>
+    <div class="flex flex-row justify-between border-b border-gray-500 pb-1 mb-4">
+        <h1 class="font-bold">Lorem Ipsum Title</h1>
+        <div class="relative">
+            <input class="border border-gray-500 rounded py-0 px-2 bg-gray-800 text-gray-200" id="search" name="search" type="text" size="10" placeholder="Search">
+            <button class="absolute right-0 top-0 mt-1 mr-1 h-4 w-4" type="submit">
+                <img class="" src="search.svg" alt="search">
+            </button>
+        </div>
+    </div>
     <form class="mb-4">
         <div>
-            <input class="border border-gray-500 rounded py-1 px-2 bg-gray-800 text-gray-200" id="symbol" name="symbol" type="text" size="10" placeholder="Enter Symbol" value="GLD">
-            <button class="border border-gray-500 rounded py-1 px-2 bg-gray-400 text-gray-800" type="submit">Get Quote</button>
+            <input class="border border-gray-500 rounded py-0 px-2 bg-gray-800 text-gray-200" id="symbol" name="symbol" type="text" size="10" placeholder="Enter Symbol" value="GLD">
+            <button class="border border-gray-500 rounded py-0 px-2 bg-gray-400 text-gray-800" type="submit">Get Quote</button>
         </div>
     </form>
     <p class="mb-4">
