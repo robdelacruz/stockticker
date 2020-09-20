@@ -461,12 +461,12 @@ func gobdecode(bs []byte) *CacheEntry {
 func fetchOverview(sym string, cache Cache) (*Overview, error) {
 	cachedOverview := cache.Lookup("overview", sym)
 	if cachedOverview != nil {
-		log.Printf("(Returning cached overview)\n")
+		log.Printf("(Returning cached overview for %s)\n", sym)
 		o := cachedOverview.(Overview)
 		return &o, nil
 	}
 
-	log.Printf("*** Fetching overview ***\n")
+	log.Printf("*** Fetching overview for %s ***\n", sym)
 	avKey := "G32E29AFMPQ2MCRG"
 	sreq := fmt.Sprintf("https://www.alphavantage.co/query?function=OVERVIEW&symbol=%s&apikey=%s", sym, avKey)
 
@@ -514,12 +514,12 @@ func fetchOverview(sym string, cache Cache) (*Overview, error) {
 func fetchPrice(sym string, cache Cache) (*Price, error) {
 	cachedPrice := cache.Lookup("price", sym)
 	if cachedPrice != nil {
-		log.Printf("(Returning cached price)\n")
+		log.Printf("(Returning cached price for %s)\n", sym)
 		p := cachedPrice.(Price)
 		return &p, nil
 	}
 
-	log.Printf("*** Fetching price ***\n")
+	log.Printf("*** Fetching price for %s ***\n", sym)
 	avKey := "G32E29AFMPQ2MCRG"
 	sreq := fmt.Sprintf("https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=%s&apikey=%s", sym, avKey)
 
@@ -569,12 +569,12 @@ func fetchPrice(sym string, cache Cache) (*Price, error) {
 func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 	cachedPrice := cache.Lookup("price", sym)
 	if cachedPrice != nil {
-		log.Printf("(Returning cached price)\n")
+		log.Printf("(Returning cached price for %s)\n", sym)
 		p := cachedPrice.(Price)
 		return &p, nil
 	}
 
-	log.Printf("*** Fetching metal price ***\n")
+	log.Printf("*** Fetching metal price for %s ***\n", sym)
 	key := "goldapi-4g7vk3ykeikk2o0-io"
 	sreq := fmt.Sprintf("https://www.goldapi.io/api/%s/USD", sym)
 
@@ -624,70 +624,79 @@ func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 
 func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sym := strings.ToUpper(r.FormValue("sym"))
-		if sym == "" {
+		qsym := strings.ToUpper(r.FormValue("sym"))
+		if qsym == "" {
 			http.Error(w, "sym required", 401)
 			return
 		}
+		syms := strings.Split(qsym, ",")
 
-		var quote Quote
-		if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
-			price, err := fetchMetalPrice(sym, mc)
-			if err != nil {
-				handleErr(w, err, "fetchMetalPrice")
-				return
+		var qq []*Quote
+
+		for _, sym := range syms {
+			var q Quote
+			if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
+				price, err := fetchMetalPrice(sym, mc)
+				if err != nil {
+					handleErr(w, err, "fetchMetalPrice")
+					return
+				}
+
+				q.Symbol = price.Symbol
+				q.Date = price.Date
+				q.Open = price.Open
+				q.High = price.High
+				q.Low = price.Low
+				q.Price = price.Price
+				q.Volume = price.Volume
+
+				if sym == "XAU" {
+					q.Name = "Spot Gold"
+				} else if sym == "XAG" {
+					q.Name = "Spot Silver"
+				} else if sym == "XPT" {
+					q.Name = "Spot Platinum"
+				} else if sym == "XPD" {
+					q.Name = "Spot Palladium"
+				} else if sym == "XRH" {
+					q.Name = "Spot Rhodium"
+				}
+			} else {
+				overview, err := fetchOverview(sym, dbc)
+				if err != nil {
+					handleErr(w, err, "fetchOverview")
+					return
+				}
+				price, err := fetchPrice(sym, mc)
+				if err != nil {
+					handleErr(w, err, "fetchPrice")
+					return
+				}
+
+				q.Symbol = price.Symbol
+				q.Name = overview.Name
+				q.Date = price.Date
+				q.Open = price.Open
+				q.High = price.High
+				q.Low = price.Low
+				q.Price = price.Price
+				q.Volume = price.Volume
 			}
 
-			quote.Symbol = price.Symbol
-			quote.Date = price.Date
-			quote.Open = price.Open
-			quote.High = price.High
-			quote.Low = price.Low
-			quote.Price = price.Price
-			quote.Volume = price.Volume
-
-			if sym == "XAU" {
-				quote.Name = "Spot Gold"
-			} else if sym == "XAG" {
-				quote.Name = "Spot Silver"
-			} else if sym == "XPT" {
-				quote.Name = "Spot Platinum"
-			} else if sym == "XPD" {
-				quote.Name = "Spot Palladium"
-			} else if sym == "XRH" {
-				quote.Name = "Spot Rhodium"
+			if q.Symbol != "" {
+				qq = append(qq, &q)
 			}
-		} else {
-			overview, err := fetchOverview(sym, dbc)
-			if err != nil {
-				handleErr(w, err, "fetchOverview")
-				return
-			}
-			price, err := fetchPrice(sym, mc)
-			if err != nil {
-				handleErr(w, err, "fetchPrice")
-				return
-			}
-
-			quote.Symbol = price.Symbol
-			quote.Name = overview.Name
-			quote.Date = price.Date
-			quote.Open = price.Open
-			quote.High = price.High
-			quote.Low = price.Low
-			quote.Price = price.Price
-			quote.Volume = price.Volume
 		}
 
-		bs, err := json.MarshalIndent(quote, "", "\t")
+		bs, err := json.MarshalIndent(qq, "", "\t")
 		if err != nil {
 			handleErr(w, err, "lookupHandler")
 			return
 		}
-		jsonQuote := string(bs)
+		jsonqq := string(bs)
 
 		w.Header().Set("Content-Type", "application/json")
 		P := makeFprintf(w)
-		P(jsonQuote)
+		P(jsonqq)
 	}
 }
