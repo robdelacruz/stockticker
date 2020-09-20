@@ -20,66 +20,6 @@ import (
 
 type PrintFunc func(format string, a ...interface{}) (n int, err error)
 
-type AlphaVantageOverview struct {
-	Symbol      string `json:"Symbol"`
-	AssetType   string `json:"AssetType"`
-	Name        string `json:"Name"`
-	Description string `json:"Description"`
-	Exchange    string `json:"Exchange"`
-}
-type AlphaVantagePrice struct {
-	GlobalQuote struct {
-		Symbol string `json:"01. symbol"`
-		Date   string `json:"07. latest trading day"`
-		Open   string `json:"02. open"`
-		High   string `json:"03. high"`
-		Low    string `json:"04. low"`
-		Price  string `json:"05. price"`
-		Volume string `json:"06. volume"`
-	} `json:"Global Quote"`
-}
-type GoldApiPrice struct {
-	Timestamp      int64   `json:"timestamp"`
-	Metal          string  `json:"metal"`
-	Currency       string  `json:"currency"`
-	Exchange       string  `json:"exchange"`
-	Symbol         string  `json:"symbol"`
-	PrevClosePrice float64 `json:"prev_close_price"`
-	OpenPrice      float64 `json:"open_price"`
-	LowPrice       float64 `json:"low_price"`
-	HighPrice      float64 `json:"high_price"`
-	Price          float64 `json:"price"`
-	Ask            float64 `json:"ask"`
-	Bid            float64 `json:"bid"`
-}
-
-type Overview struct {
-	Symbol      string `json:"symbol"`
-	AssetType   string `json:"assettype"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Exchange    string `json:"exchange"`
-}
-type Price struct {
-	Symbol string  `json:"symbol"`
-	Date   string  `json:"date"`
-	Open   float64 `json:"open"`
-	High   float64 `json:"high"`
-	Low    float64 `json:"low"`
-	Price  float64 `json:"price"`
-	Volume float64 `json:"volume"`
-}
-type Quote struct {
-	Symbol string  `json:"symbol"`
-	Name   string  `json:"name"`
-	Date   string  `json:"date"`
-	Open   float64 `json:"open"`
-	High   float64 `json:"high"`
-	Low    float64 `json:"low"`
-	Price  float64 `json:"price"`
-	Volume float64 `json:"volume"`
-}
-
 func main() {
 	err := run(os.Args[1:])
 	if err != nil {
@@ -458,6 +398,14 @@ func gobdecode(bs []byte) *CacheEntry {
 	return &v
 }
 
+type AlphaVantageOverview struct {
+	Symbol      string `json:"Symbol"`
+	AssetType   string `json:"AssetType"`
+	Name        string `json:"Name"`
+	Description string `json:"Description"`
+	Exchange    string `json:"Exchange"`
+}
+
 func fetchOverview(sym string, cache Cache) (*Overview, error) {
 	cachedOverview := cache.Lookup("overview", sym)
 	if cachedOverview != nil {
@@ -511,7 +459,19 @@ func fetchOverview(sym string, cache Cache) (*Overview, error) {
 	return &o, nil
 }
 
-func fetchPrice(sym string, cache Cache) (*Price, error) {
+type AlphaVantagePrice struct {
+	GlobalQuote struct {
+		Symbol string `json:"01. symbol"`
+		Date   string `json:"07. latest trading day"`
+		Open   string `json:"02. open"`
+		High   string `json:"03. high"`
+		Low    string `json:"04. low"`
+		Price  string `json:"05. price"`
+		Volume string `json:"06. volume"`
+	} `json:"Global Quote"`
+}
+
+func fetchStockPrice(sym string, cache Cache) (*Price, error) {
 	cachedPrice := cache.Lookup("price", sym)
 	if cachedPrice != nil {
 		log.Printf("(Returning cached price for %s)\n", sym)
@@ -564,6 +524,21 @@ func fetchPrice(sym string, cache Cache) (*Price, error) {
 	}
 
 	return &p, nil
+}
+
+type GoldApiPrice struct {
+	Timestamp      int64   `json:"timestamp"`
+	Metal          string  `json:"metal"`
+	Currency       string  `json:"currency"`
+	Exchange       string  `json:"exchange"`
+	Symbol         string  `json:"symbol"`
+	PrevClosePrice float64 `json:"prev_close_price"`
+	OpenPrice      float64 `json:"open_price"`
+	LowPrice       float64 `json:"low_price"`
+	HighPrice      float64 `json:"high_price"`
+	Price          float64 `json:"price"`
+	Ask            float64 `json:"ask"`
+	Bid            float64 `json:"bid"`
 }
 
 func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
@@ -622,6 +597,33 @@ func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 	return &p, nil
 }
 
+type Quote struct {
+	Symbol string  `json:"symbol"`
+	Name   string  `json:"name"`
+	Date   string  `json:"date"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Price  float64 `json:"price"`
+	Volume float64 `json:"volume"`
+}
+type Overview struct {
+	Symbol      string `json:"symbol"`
+	AssetType   string `json:"assettype"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Exchange    string `json:"exchange"`
+}
+type Price struct {
+	Symbol string  `json:"symbol"`
+	Date   string  `json:"date"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Price  float64 `json:"price"`
+	Volume float64 `json:"volume"`
+}
+
 func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		qsym := strings.ToUpper(r.FormValue("sym"))
@@ -667,9 +669,9 @@ func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
 					handleErr(w, err, "fetchOverview")
 					return
 				}
-				price, err := fetchPrice(sym, mc)
+				price, err := fetchStockPrice(sym, mc)
 				if err != nil {
-					handleErr(w, err, "fetchPrice")
+					handleErr(w, err, "fetchStockPrice")
 					return
 				}
 
