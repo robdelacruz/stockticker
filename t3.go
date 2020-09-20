@@ -79,7 +79,7 @@ Initialize new database file:
 
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "./static/coffee.ico") })
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
-	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir("./"))))
+	http.HandleFunc("/", indexHandler(db, mc, dbc))
 	http.HandleFunc("/api/lookup/", lookupHandler(db, mc, dbc))
 
 	port := "8000"
@@ -398,6 +398,37 @@ func gobdecode(bs []byte) *CacheEntry {
 	return &v
 }
 
+//*** Other html template functions ***
+func printHead(P PrintFunc, jsurls []string, cssurls []string, title string) {
+	P("<!DOCTYPE html>\n")
+	P("<html>\n")
+	P("<head>\n")
+	P("<meta charset=\"utf-8\">\n")
+	P("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
+	P("<title>%s</title>\n", title)
+	P("<link rel=\"stylesheet\" type=\"text/css\" href=\"/static/style.css\">\n")
+	for _, cssurl := range cssurls {
+		P("<link rel=\"stylesheet\" type=\"text/css\" href=\"%s\">\n", cssurl)
+	}
+	for _, jsurl := range jsurls {
+		P("<script src=\"%s\" defer></script>\n", jsurl)
+	}
+	P("</head>\n")
+	P("<body class=\"bg-gray-900 text-sm\">\n")
+	P("  <section class=\"flex flex-row py-4 mx-auto\">\n")
+}
+func printFoot(P PrintFunc) {
+	P("  </section>\n")
+	printFooter(P)
+	P("</body>\n")
+	P("</html>\n")
+}
+func printFooter(P PrintFunc) {
+	P("<div class=\"footer flex flex-row justify-center text-xs p-1\">\n")
+	P("  <p class=\"text-gray-500\">Made with <a class=\"text-gray-500 underline\" href=\"https://github.com/robdelacruz/t3\">t3</a>.</p>\n")
+	P("</div>\n")
+}
+
 type AlphaVantageOverview struct {
 	Symbol      string `json:"Symbol"`
 	AssetType   string `json:"AssetType"`
@@ -624,6 +655,62 @@ type Price struct {
 	Volume float64 `json:"volume"`
 }
 
+func fetchQuotes(syms []string, mc, dbc Cache) ([]*Quote, error) {
+	var qq []*Quote
+	for _, sym := range syms {
+		var q Quote
+		if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
+			price, err := fetchMetalPrice(sym, mc)
+			if err != nil {
+				return nil, err
+			}
+
+			q.Symbol = price.Symbol
+			q.Date = price.Date
+			q.Open = price.Open
+			q.High = price.High
+			q.Low = price.Low
+			q.Price = price.Price
+			q.Volume = price.Volume
+
+			if sym == "XAU" {
+				q.Name = "Spot Gold"
+			} else if sym == "XAG" {
+				q.Name = "Spot Silver"
+			} else if sym == "XPT" {
+				q.Name = "Spot Platinum"
+			} else if sym == "XPD" {
+				q.Name = "Spot Palladium"
+			} else if sym == "XRH" {
+				q.Name = "Spot Rhodium"
+			}
+		} else {
+			overview, err := fetchOverview(sym, dbc)
+			if err != nil {
+				return nil, err
+			}
+			price, err := fetchStockPrice(sym, mc)
+			if err != nil {
+				return nil, err
+			}
+
+			q.Symbol = price.Symbol
+			q.Name = overview.Name
+			q.Date = price.Date
+			q.Open = price.Open
+			q.High = price.High
+			q.Low = price.Low
+			q.Price = price.Price
+			q.Volume = price.Volume
+		}
+
+		if q.Symbol != "" {
+			qq = append(qq, &q)
+		}
+	}
+	return qq, nil
+}
+
 func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		qsym := strings.ToUpper(r.FormValue("sym"))
@@ -632,62 +719,10 @@ func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
 			return
 		}
 		syms := strings.Split(qsym, ",")
-
-		var qq []*Quote
-
-		for _, sym := range syms {
-			var q Quote
-			if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
-				price, err := fetchMetalPrice(sym, mc)
-				if err != nil {
-					handleErr(w, err, "fetchMetalPrice")
-					return
-				}
-
-				q.Symbol = price.Symbol
-				q.Date = price.Date
-				q.Open = price.Open
-				q.High = price.High
-				q.Low = price.Low
-				q.Price = price.Price
-				q.Volume = price.Volume
-
-				if sym == "XAU" {
-					q.Name = "Spot Gold"
-				} else if sym == "XAG" {
-					q.Name = "Spot Silver"
-				} else if sym == "XPT" {
-					q.Name = "Spot Platinum"
-				} else if sym == "XPD" {
-					q.Name = "Spot Palladium"
-				} else if sym == "XRH" {
-					q.Name = "Spot Rhodium"
-				}
-			} else {
-				overview, err := fetchOverview(sym, dbc)
-				if err != nil {
-					handleErr(w, err, "fetchOverview")
-					return
-				}
-				price, err := fetchStockPrice(sym, mc)
-				if err != nil {
-					handleErr(w, err, "fetchStockPrice")
-					return
-				}
-
-				q.Symbol = price.Symbol
-				q.Name = overview.Name
-				q.Date = price.Date
-				q.Open = price.Open
-				q.High = price.High
-				q.Low = price.Low
-				q.Price = price.Price
-				q.Volume = price.Volume
-			}
-
-			if q.Symbol != "" {
-				qq = append(qq, &q)
-			}
+		qq, err := fetchQuotes(syms, mc, dbc)
+		if err != nil {
+			handleErr(w, err, "lookupHandler")
+			return
 		}
 
 		bs, err := json.MarshalIndent(qq, "", "\t")
@@ -700,5 +735,42 @@ func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		P := makeFprintf(w)
 		P(jsonqq)
+	}
+}
+
+func indexHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		qsym := strings.ToUpper(r.FormValue("sym"))
+		syms := strings.Split(qsym, ",")
+		qq, err := fetchQuotes(syms, mc, dbc)
+		if err != nil {
+			handleErr(w, err, "indexHandler")
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html")
+		P := makeFprintf(w)
+		printHead(P, nil, nil, "t2")
+
+		P("<div class=\"bg-gray-800 text-gray-200 py-4 px-8 rounded-lg shadow-lg mx-auto\" style=\"width: 28rem;\">\n")
+		P("    <div class=\"flex flex-row justify-between border-b border-gray-700 pb-1 mb-4\">\n")
+		P("        <h1 class=\"font-bold\">Watchlist</h1>\n")
+		P("    </div>\n")
+		P("    <table class=\"table-fixed\">\n")
+		P("    <tbody>\n")
+
+		for _, q := range qq {
+			P("        <tr class=\"border-t border-b border-gray-700\">\n")
+			P("            <td class=\"w-32 py-1 pr-2 truncate text-gray-500\" style=\"max-width: 16em;\">%s</td>\n", q.Name)
+			P("            <td class=\"w-32 py-1 pr-2 text-green-500\">%s</td>\n", q.Symbol)
+			P("            <td class=\"w-32 py-1 pr-2 text-right\">%.2f</td>\n", q.Price)
+			P("        </tr>\n")
+		}
+
+		P("    </tbody>\n")
+		P("    </table>\n")
+		P("</div>\n")
+
+		printFoot(P)
 	}
 }
