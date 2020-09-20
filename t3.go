@@ -80,16 +80,72 @@ type Quote struct {
 	Volume float64 `json:"volume"`
 }
 
-type Context struct {
-	db       *sql.DB
-	memcache MemCache
-	dbcache  DbCache
+func main() {
+	err := run(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
+	}
 }
 
-func init() {
+func run(args []string) error {
+	sw, parms := parseArgs(args)
+
+	// [-i new_file]  Create and initialize db file
+	if sw["i"] != "" {
+		dbfile := sw["i"]
+		if fileExists(dbfile) {
+			return fmt.Errorf("File '%s' already exists. Can't initialize it.\n", dbfile)
+		}
+		createTables(dbfile)
+		return nil
+	}
+
+	// Need to specify a db file as first parameter.
+	if len(parms) == 0 {
+		s := `Usage:
+
+Start webservice using database file:
+	t2 <sites.db>
+
+Initialize new database file:
+	t2 -i <sites.db>
+`
+		fmt.Printf(s)
+		return nil
+	}
+
+	// Exit if db file doesn't exist.
+	dbfile := parms[0]
+	if !fileExists(dbfile) {
+		return fmt.Errorf(`Sites database file '%s' doesn't exist. Create one using:
+	wb -i <notes.db>
+`, dbfile)
+	}
+	db, err := sql.Open("sqlite3", dbfile)
+	if err != nil {
+		return fmt.Errorf("Error opening '%s' (%s)\n", dbfile, err)
+	}
+
+	mc := MemCache{}
+	dbc := DbCache(*db)
+	err = dbc.CreateTables()
+	if err != nil {
+		return fmt.Errorf("Error creating dbcache table (%s)\n", err)
+	}
 	gob.Register(CacheEntry{})
 	gob.Register(Overview{})
 	gob.Register(Price{})
+
+	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "./static/coffee.ico") })
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
+	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir("./"))))
+	http.HandleFunc("/api/lookup/", lookupHandler(db, mc, dbc))
+
+	port := "8000"
+	fmt.Printf("Listening on %s...\n", port)
+	err = http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
+	return err
 }
 
 func createTables(newfile string) {
@@ -128,72 +184,6 @@ func createTables(newfile string) {
 		log.Printf("DB error (%s)\n", err)
 		os.Exit(1)
 	}
-}
-
-func main() {
-	os.Args = os.Args[1:]
-	sw, parms := parseArgs(os.Args)
-
-	// [-i new_file]  Create and initialize db file
-	if sw["i"] != "" {
-		dbfile := sw["i"]
-		if fileExists(dbfile) {
-			s := fmt.Sprintf("File '%s' already exists. Can't initialize it.\n", dbfile)
-			fmt.Printf(s)
-			os.Exit(1)
-		}
-		createTables(dbfile)
-		os.Exit(0)
-	}
-
-	// Need to specify a db file as first parameter.
-	if len(parms) == 0 {
-		s := `Usage:
-
-Start webservice using database file:
-	t2 <sites.db>
-
-Initialize new database file:
-	t2 -i <sites.db>
-`
-		fmt.Printf(s)
-		os.Exit(0)
-	}
-
-	// Exit if db file doesn't exist.
-	dbfile := parms[0]
-	if !fileExists(dbfile) {
-		s := fmt.Sprintf(`Sites database file '%s' doesn't exist. Create one using:
-	wb -i <notes.db>
-`, dbfile)
-		fmt.Printf(s)
-		os.Exit(1)
-	}
-
-	db, err := sql.Open("sqlite3", dbfile)
-	if err != nil {
-		fmt.Printf("Error opening '%s' (%s)\n", dbfile, err)
-		os.Exit(1)
-	}
-
-	memcache := MemCache{}
-	dbcache := DbCache(*db)
-	err = dbcache.CreateTables()
-	if err != nil {
-		fmt.Printf("Error creating dbcache table (%s)\n", err)
-		os.Exit(1)
-	}
-	ctx := Context{db: db, memcache: memcache, dbcache: dbcache}
-
-	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, "./static/coffee.ico") })
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
-	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir("./"))))
-	http.HandleFunc("/api/lookup/", ctx.lookupHandler)
-
-	port := "8000"
-	fmt.Printf("Listening on %s...\n", port)
-	err = http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
-	log.Fatal(err)
 }
 
 //*** DB functions ***
@@ -632,71 +622,72 @@ func fetchMetalPrice(sym string, cache Cache) (*Price, error) {
 	return &p, nil
 }
 
-func (ctx *Context) lookupHandler(w http.ResponseWriter, r *http.Request) {
-	sym := strings.ToUpper(r.FormValue("sym"))
-	if sym == "" {
-		http.Error(w, "sym required", 401)
-		return
-	}
-
-	var quote Quote
-
-	if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
-		price, err := fetchMetalPrice(sym, ctx.memcache)
-		if err != nil {
-			handleErr(w, err, "fetchMetalPrice")
+func lookupHandler(db *sql.DB, mc, dbc Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sym := strings.ToUpper(r.FormValue("sym"))
+		if sym == "" {
+			http.Error(w, "sym required", 401)
 			return
 		}
 
-		quote.Symbol = price.Symbol
-		quote.Date = price.Date
-		quote.Open = price.Open
-		quote.High = price.High
-		quote.Low = price.Low
-		quote.Price = price.Price
-		quote.Volume = price.Volume
+		var quote Quote
+		if sym == "XAU" || sym == "XAG" || sym == "XPT" || sym == "XPD" || sym == "XRH" {
+			price, err := fetchMetalPrice(sym, mc)
+			if err != nil {
+				handleErr(w, err, "fetchMetalPrice")
+				return
+			}
 
-		if sym == "XAU" {
-			quote.Name = "Spot Gold"
-		} else if sym == "XAG" {
-			quote.Name = "Spot Silver"
-		} else if sym == "XPT" {
-			quote.Name = "Spot Platinum"
-		} else if sym == "XPD" {
-			quote.Name = "Spot Palladium"
-		} else if sym == "XRH" {
-			quote.Name = "Spot Rhodium"
+			quote.Symbol = price.Symbol
+			quote.Date = price.Date
+			quote.Open = price.Open
+			quote.High = price.High
+			quote.Low = price.Low
+			quote.Price = price.Price
+			quote.Volume = price.Volume
+
+			if sym == "XAU" {
+				quote.Name = "Spot Gold"
+			} else if sym == "XAG" {
+				quote.Name = "Spot Silver"
+			} else if sym == "XPT" {
+				quote.Name = "Spot Platinum"
+			} else if sym == "XPD" {
+				quote.Name = "Spot Palladium"
+			} else if sym == "XRH" {
+				quote.Name = "Spot Rhodium"
+			}
+		} else {
+			overview, err := fetchOverview(sym, dbc)
+			if err != nil {
+				handleErr(w, err, "fetchOverview")
+				return
+			}
+			price, err := fetchPrice(sym, mc)
+			if err != nil {
+				handleErr(w, err, "fetchPrice")
+				return
+			}
+
+			quote.Symbol = price.Symbol
+			quote.Name = overview.Name
+			quote.Date = price.Date
+			quote.Open = price.Open
+			quote.High = price.High
+			quote.Low = price.Low
+			quote.Price = price.Price
+			quote.Volume = price.Volume
 		}
-	} else {
-		overview, err := fetchOverview(sym, ctx.dbcache)
+
+		bs, err := json.MarshalIndent(quote, "", "\t")
 		if err != nil {
-			handleErr(w, err, "fetchOverview")
+			handleErr(w, err, "lookupHandler")
 			return
 		}
-		price, err := fetchPrice(sym, ctx.memcache)
-		if err != nil {
-			handleErr(w, err, "fetchPrice")
-			return
-		}
+		jsonQuote := string(bs)
 
-		quote.Symbol = price.Symbol
-		quote.Name = overview.Name
-		quote.Date = price.Date
-		quote.Open = price.Open
-		quote.High = price.High
-		quote.Low = price.Low
-		quote.Price = price.Price
-		quote.Volume = price.Volume
+		w.Header().Set("Content-Type", "application/json")
+		P := makeFprintf(w)
+		P(jsonQuote)
 	}
-
-	bs, err := json.MarshalIndent(quote, "", "\t")
-	if err != nil {
-		handleErr(w, err, "lookupHandler")
-		return
-	}
-	jsonQuote := string(bs)
-
-	w.Header().Set("Content-Type", "application/json")
-	P := makeFprintf(w)
-	P(jsonQuote)
 }
