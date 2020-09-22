@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jstest</title>
-<link rel="stylesheet" type="text/css" href="static/style.css">
-<link rel="stylesheet" type="text/css" href="static/bundle.css">
-<script defer src="static/bundle.js"></script>
+<link rel="stylesheet" type="text/css" href="style.css">
+<link rel="stylesheet" type="text/css" href="bundle.css">
+<script defer src="bundle.js"></script>
 </head>
 <body class="p-4 bg-gray-900 text-sm">
 <!--
@@ -24,9 +24,19 @@
         </div>
     </div>
     <form class="mb-4">
-        <div>
+        <div class="mb-2">
             <input class="border border-gray-500 rounded py-0 px-2 bg-gray-800 text-gray-200" id="symbol" name="symbol" type="text" size="10" placeholder="Enter Symbol" value="GLD">
             <button class="border border-gray-500 rounded py-0 px-2 bg-gray-400 text-gray-800" type="submit">Get Quote</button>
+        </div>
+        <div class="mb-2 bg-gray-800 text-gray-200">
+            <label for="fruit">Choose fruit</label><br>
+            <select class="bg-gray-800 text-gray-200" name="fruit" id="fruit">
+                <option value="apple">Apple</option>
+                <option value="orange">Orange</option>
+                <option value="pear">Pear</option>
+                <option value="mango">Mango</option>
+                <option value="pineapple">Pineapple</option>
+            </select>
         </div>
     </form>
     <p class="mb-4">
